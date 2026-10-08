@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safety Quiz Practice</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">職安健常識問答 <span>Practice</span></div>
+  <div class="src" id="srcLine"></div>
+</header>
+
+<!-- ============ SETUP ============ -->
+<main id="setup" class="screen">
+  <section class="card">
+    <div class="row-between">
+      <h2>1 · Chapters</h2>
+      <div class="btn-row">
+        <button class="ghost" id="chAll">All</button>
+        <button class="ghost" id="chNone">None</button>
+      </div>
+    </div>
+    <div id="chapters" class="chapters"></div>
+    <label class="check wrongbook"><input type="checkbox" id="onlyWrong"> Only my wrong-answer book <b id="wrongCount">0</b></label>
+  </section>
+
+  <section class="card">
+    <h2>2 · Settings</h2>
+    <div class="grid">
+      <div class="field">
+        <label>Questions</label>
+        <div class="seg" id="countSeg">
+          <button data-v="10">10</button><button data-v="20">20</button><button data-v="50">50</button><button data-v="100">100</button><button data-v="all">All</button>
+        </div>
+        <input type="number" id="count" min="1" step="1">
+      </div>
+      <div class="field">
+        <label>Mode</label>
+        <div class="seg" id="modeSeg">
+          <button data-v="practice">Practice</button><button data-v="exam">Exam</button>
+        </div>
+        <small id="modeHint"></small>
+      </div>
+      <div class="field">
+        <label>Countdown</label>
+        <div class="seg" id="timerSeg">
+          <button data-v="off">Off</button><button data-v="question">Per question</button><button data-v="total">Whole quiz</button>
+        </div>
+        <div class="inline" id="perQWrap"><input type="number" id="perQ" min="3" max="600"> seconds per question</div>
+        <div class="inline" id="totalWrap"><input type="number" id="totalMin" min="1" max="600"> minutes in total</div>
+      </div>
+      <div class="field">
+        <label>Shuffle</label>
+        <label class="check"><input type="checkbox" id="shuffleQ"> Shuffle question order</label>
+        <label class="check"><input type="checkbox" id="shuffleO"> Shuffle A / B / C</label>
+        <label class="check"><input type="checkbox" id="autoNext"> Auto-next after a correct answer</label>
+      </div>
+    </div>
+    <div class="btn-row end">
+      <button class="ghost" id="resetDefaults">Reset to defaults</button>
+      <button class="primary big" id="start">Start</button>
+    </div>
+    <div class="note" id="poolNote"></div>
+  </section>
+
+  <section class="card" id="historyCard">
+    <div class="row-between">
+      <h2>Recent results</h2>
+      <button class="ghost" id="clearData">Clear history &amp; wrong book</button>
+    </div>
+    <div id="history" class="history"></div>
+  </section>
+</main>
+
+<!-- ============ QUIZ ============ -->
+<main id="quiz" class="screen" hidden>
+  <div class="quizbar">
+    <button class="ghost" id="quit">✕ End</button>
+    <div class="progress"><div id="progFill"></div></div>
+    <div class="stat" id="progText"></div>
+    <div class="stat score" id="scoreText"></div>
+    <div class="timer" id="timer"><span id="timerText"></span><div class="tbar"><div id="timerFill"></div></div></div>
+  </div>
+  <section class="card qcard">
+    <div class="qmeta"><span class="tag" id="qTag"></span><span id="qId"></span></div>
+    <h3 id="qText"></h3>
+    <div id="opts" class="opts"></div>
+    <div id="feedback" class="feedback" hidden></div>
+    <div class="btn-row end">
+      <button class="ghost" id="prev" hidden>← Back</button>
+      <button class="primary" id="next">Next →</button>
+    </div>
+    <div class="keys">Keys: <kbd>A</kbd><kbd>B</kbd><kbd>C</kbd> or <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> to answer · <kbd>Enter</kbd> next</div>
+  </section>
+</main>
+
+<!-- ============ RESULT ============ -->
+<main id="result" class="screen" hidden>
+  <section class="card">
+    <div class="scorebig" id="resScore"></div>
+    <div class="ressub" id="resSub"></div>
+    <div class="btn-row center">
+      <button class="primary" id="retryWrong">Retry the wrong ones</button>
+      <button id="again">Same settings again</button>
+      <button class="ghost" id="toSetup">Back to setup</button>
+    </div>
+  </section>
+  <section class="card">
+    <h2>By chapter</h2>
+    <div id="byChapter" class="bych"></div>
+  </section>
+  <section class="card">
+    <h2>Review <small id="reviewCount"></small></h2>
+    <label class="check"><input type="checkbox" id="showAllReview"> Show correct answers too</label>
+    <div id="review" class="review"></div>
+  </section>
+</main>
+
+<script src="data/questions.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
