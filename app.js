@@ -1,268 +1,404 @@
-// Safety Quiz practice app — plain JS, works offline from file://
-// Data comes from data/questions.js (window.SQ_DATA).
-(() => {
-'use strict';
+// 職安健常識問答 practice, standalone build.
+// Question bank: OSHC Safety Quiz Handbook 2026, loaded from data/bank.js as window.SAFETY_BANK.
+// The passcode is a front-end gate, not security.
+// Every screen is sized to the viewport so a phone never has to scroll the page.
+(function () {
+  "use strict";
 
-const DATA = window.SQ_DATA;
-const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const LETTERS = ['A', 'B', 'C', 'D'];
-const BY_ID = Object.fromEntries(DATA.questions.map(q => [q.id, q]));
-const CH_NAME = Object.fromEntries(DATA.chapters.map(c => [c.n, c.name]));
+  var PASS = "tnd";
+  var KEY = { gate: "safety_quiz_access_ok", settings: "safety_quiz_settings", wrong: "safety_quiz_wrong", history: "safety_quiz_history" };
+  var LETTERS = ["A", "B", "C"];
+  var ALL_CH = Array.from({ length: 20 }, function (_, i) { return i + 1; });
+  var DEFAULTS = {
+    chapters: ALL_CH, count: 50, mode: "practice", timer: "question",
+    perQ: 20, totalMin: 30, shuffleQ: true, shuffleO: true, autoNext: false, onlyWrong: false
+  };
 
-// ---------- saved settings / history / wrong book (localStorage, per browser) ----------
-const store = {
-  get(k, d){ try { const v = localStorage.getItem('sq.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v){ try { localStorage.setItem('sq.' + k, JSON.stringify(v)); } catch (e) {} },
-  del(k){ try { localStorage.removeItem('sq.' + k); } catch (e) {} },
-};
-const DEFAULTS = {
-  chapters: DATA.chapters.map(c => c.n),  // all chapters
-  count: 50,
-  mode: 'practice',                       // practice = answer shown after each question; exam = at the end
-  timer: 'question',                      // off | question | total
-  perQ: 20,                               // seconds per question
-  totalMin: 30,                           // minutes for the whole quiz
-  shuffleQ: true,
-  shuffleO: true,
-  autoNext: false,
-  onlyWrong: false,
-};
-let S = {...DEFAULTS, ...store.get('settings', {})};
-let wrongBook = store.get('wrong', {});    // id -> times wrong
-let history = store.get('history', []);    // recent results
+  // ---------- storage, always wrapped so a blocked localStorage never breaks the page ----------
+  function load(k, d) { try { var v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
+  function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage blocked */ } }
+  function gateSeen() { try { return localStorage.getItem(KEY.gate) === "1"; } catch (e) { return false; } }
+  function gateRemember() { try { localStorage.setItem(KEY.gate, "1"); } catch (e) { /* storage blocked */ } }
 
-// ---------- setup screen ----------
-$('srcLine').textContent = `題庫：${DATA.source} · ${DATA.questions.length} 題 · checked ${DATA.checked}`;
-
-function renderChapters(){
-  $('chapters').innerHTML = DATA.chapters.map(c => {
-    const on = S.chapters.includes(c.n);
-    return `<label class="chip${on ? ' on' : ''}"><input type="checkbox" data-ch="${c.n}"${on ? ' checked' : ''}>
-      <span class="n">${c.n}</span><span>${esc(c.name)}</span><span class="c">${c.count}</span></label>`;
-  }).join('');
-}
-$('chapters').addEventListener('change', e => {
-  const n = +e.target.dataset.ch; if (!n) return;
-  S.chapters = e.target.checked ? [...new Set([...S.chapters, n])].sort((a, b) => a - b) : S.chapters.filter(x => x !== n);
-  saveSettings(); renderChapters(); renderSetup();
-});
-$('chAll').onclick = () => { S.chapters = DATA.chapters.map(c => c.n); saveSettings(); renderChapters(); renderSetup(); };
-$('chNone').onclick = () => { S.chapters = []; saveSettings(); renderChapters(); renderSetup(); };
-
-function segBind(id, key, parse){
-  $(id).addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    S[key] = parse ? parse(b.dataset.v) : b.dataset.v; saveSettings(); renderSetup();
-  });
-}
-segBind('countSeg', 'count', v => v === 'all' ? 'all' : +v);
-segBind('modeSeg', 'mode');
-segBind('timerSeg', 'timer');
-$('count').addEventListener('input', e => { const v = parseInt(e.target.value, 10); if (v > 0) { S.count = v; saveSettings(); renderSetup(false); } });
-$('perQ').addEventListener('input', e => { const v = parseInt(e.target.value, 10); if (v >= 3) { S.perQ = v; saveSettings(); } });
-$('totalMin').addEventListener('input', e => { const v = parseInt(e.target.value, 10); if (v >= 1) { S.totalMin = v; saveSettings(); } });
-['shuffleQ', 'shuffleO', 'autoNext', 'onlyWrong'].forEach(k => $(k).addEventListener('change', e => { S[k] = e.target.checked; saveSettings(); renderSetup(); }));
-$('resetDefaults').onclick = () => { S = {...DEFAULTS}; saveSettings(); renderChapters(); renderSetup(); };
-$('clearData').onclick = () => {
-  if (!confirm('Clear your result history and wrong-answer book?')) return;
-  wrongBook = {}; history = []; store.del('wrong'); store.del('history'); renderSetup();
-};
-
-function saveSettings(){ store.set('settings', S); }
-function pool(){
-  return DATA.questions.filter(q => S.chapters.includes(q.ch) && (!S.onlyWrong || wrongBook[q.id]));
-}
-function renderSetup(syncCount = true){
-  const P = pool(), n = S.count === 'all' ? P.length : Math.min(S.count, P.length);
-  document.querySelectorAll('#countSeg button').forEach(b => b.classList.toggle('on', String(S.count) === b.dataset.v));
-  if (syncCount) $('count').value = S.count === 'all' ? P.length : S.count;
-  document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', S.mode === b.dataset.v));
-  $('modeHint').textContent = S.mode === 'practice' ? 'See the answer right after each question.' : 'No answers until the end — like the real competition.';
-  document.querySelectorAll('#timerSeg button').forEach(b => b.classList.toggle('on', S.timer === b.dataset.v));
-  $('perQWrap').hidden = S.timer !== 'question'; $('totalWrap').hidden = S.timer !== 'total';
-  $('perQ').value = S.perQ; $('totalMin').value = S.totalMin;
-  ['shuffleQ', 'shuffleO', 'autoNext', 'onlyWrong'].forEach(k => $(k).checked = S[k]);
-  $('autoNext').disabled = S.mode !== 'practice';
-  const wc = Object.keys(wrongBook).length;
-  $('wrongCount').textContent = wc;
-  $('poolNote').textContent = P.length ? `${n} of ${P.length} available questions` : (S.onlyWrong && !wc ? 'Your wrong-answer book is empty.' : 'Pick at least one chapter.');
-  $('start').disabled = !P.length;
-  $('history').innerHTML = history.length ? history.slice(0, 10).map(h =>
-    `<div class="hrow"><span class="pct" style="color:${h.pct >= 70 ? 'var(--good)' : h.pct >= 50 ? 'var(--warn)' : 'var(--bad)'}">${h.pct}%</span>
-     <span>${h.right}/${h.total} · ${esc(h.label)}</span><span class="d">${esc(h.date)}</span></div>`).join('')
-    : '<div class="empty">No results yet.</div>';
-}
-
-// ---------- quiz ----------
-const shuffle = a => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
-let Z = null;   // current quiz state
-let tick = null;
-
-function startQuiz(questions, retry = false){
-  const n = S.count === 'all' ? questions.length : Math.min(S.count, questions.length);
-  let list = S.shuffleQ ? shuffle(questions) : [...questions].sort((a, b) => a.ch - b.ch || a.id.localeCompare(b.id, undefined, {numeric: true}));
-  list = list.slice(0, n).map(q => {
-    // options that refer to each other ("以上兩者皆是") keep their printed order
-    const order = S.shuffleO && !q.k ? shuffle([0, 1, 2]) : [0, 1, 2];
-    return {q, order, pick: null, timedOut: false};
-  });
-  Z = {items: list, i: 0, mode: S.mode, timer: S.timer, perQ: S.perQ, start: Date.now(),
-       deadline: S.timer === 'total' ? Date.now() + S.totalMin * 60000 : null, done: false,
-       label: labelFor(retry ? list.map(x => x.q.ch) : S.chapters, retry)};
-  show('quiz'); renderQ();
-}
-function labelFor(chList, retry){
-  const chs = [...new Set(chList)];
-  const base = chs.length === 1 ? `Ch ${chs[0]} ${CH_NAME[chs[0]]}` : chs.length === DATA.chapters.length ? 'All chapters' : `${chs.length} chapters`;
-  return (S.onlyWrong ? 'Wrong book · ' : '') + base + (retry ? ' · retry' : '');
-}
-
-function renderQ(){
-  const it = Z.items[Z.i], q = it.q, answered = it.pick != null || it.timedOut;
-  it.seen = true;
-  const reveal = Z.mode === 'practice' && answered;
-  $('qTag').textContent = `第${q.ch}章 ${CH_NAME[q.ch]}`;
-  $('qId').textContent = `${q.id} · 手冊 p.${q.p}`;
-  $('qText').textContent = q.q;
-  $('opts').innerHTML = it.order.map((oi, pos) => {
-    let cls = 'opt';
-    if (reveal) { if (oi === q.a) cls += ' right'; else if (oi === it.pick) cls += ' wrong'; }
-    else if (oi === it.pick) cls += ' sel';
-    return `<button class="${cls}" data-oi="${oi}"${reveal ? ' disabled' : ''}><span class="l">${LETTERS[pos]}</span><span>${esc(q.o[oi])}</span></button>`;
-  }).join('');
-  const fb = $('feedback');
-  if (reveal) {
-    const ok = it.pick === q.a, pos = it.order.indexOf(q.a);
-    fb.hidden = false; fb.className = 'feedback ' + (ok ? 'ok' : 'no');
-    fb.textContent = ok ? '✓ Correct' : `${it.timedOut ? '⏱ Time up' : '✗ Wrong'} — answer: ${LETTERS[pos]}. ${q.o[q.a]}`;
-  } else fb.hidden = true;
-  $('prev').hidden = Z.mode !== 'exam' || Z.i === 0;
-  $('next').textContent = Z.i === Z.items.length - 1 ? 'Finish' : 'Next →';
-  $('next').disabled = Z.mode === 'practice' && !answered;
-  const right = Z.items.filter(x => x.pick === x.q.a).length, seen = Z.items.filter(x => x.pick != null || x.timedOut).length;
-  $('progText').textContent = `${Z.i + 1} / ${Z.items.length}`;
-  $('progFill').style.width = (Z.i / Z.items.length * 100) + '%';
-  $('scoreText').textContent = Z.mode === 'practice' ? `✓ ${right} / ${seen}` : '';
-  startTimer(answered);
-}
-
-function startTimer(answered){
-  clearInterval(tick); tick = null;
-  if (Z.timer === 'off') { $('timer').hidden = true; return; }
-  $('timer').hidden = false;
-  const it = Z.items[Z.i];
-  if (Z.timer === 'question') {
-    if (answered && Z.mode === 'practice') { drawTimer(it.left ?? 0, Z.perQ); return; }
-    if (it.left == null) it.left = Z.perQ;
-    if (it.left <= 0) { drawTimer(0, Z.perQ); return; }  // already timed out (exam mode, came back)
-    let end = Date.now() + it.left * 1000;
-    const step = () => {
-      it.left = Math.max(0, (end - Date.now()) / 1000); drawTimer(it.left, Z.perQ);
-      if (it.left <= 0) { clearInterval(tick); timeUp(); }
-    };
-    step(); tick = setInterval(step, 100);
-  } else {
-    const total = S.totalMin * 60;
-    const step = () => {
-      const left = Math.max(0, (Z.deadline - Date.now()) / 1000); drawTimer(left, total);
-      if (left <= 0) { clearInterval(tick); finish(); }
-    };
-    step(); tick = setInterval(step, 250);
+  function shuffle(a) {
+    a = a.slice();
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
   }
-}
-function drawTimer(left, total){
-  const s = Math.ceil(left);
-  $('timerText').textContent = s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${s}s`;
-  $('timerFill').style.width = (left / total * 100) + '%';
-  $('timer').classList.toggle('low', left <= Math.min(5, total * 0.2) || (total > 120 && left <= 60));
-}
-function timeUp(){
-  const it = Z.items[Z.i];
-  if (it.pick == null) it.timedOut = true;
-  if (Z.mode === 'practice') renderQ(); else next();
-}
+  function answered(it) { return it.pick !== null || it.timedOut; }
+  function pctColor(p) { return p >= 70 ? "c-green" : p >= 50 ? "c-amber" : "c-red"; }
+  function fmtTime(s) { s = Math.ceil(s); return s >= 60 ? Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") : s + "s"; }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+  }
+  function asObject(v) { return v && typeof v === "object" && !Array.isArray(v) ? v : {}; }
 
-function choose(oi){
-  if (Z.done) return;
-  const it = Z.items[Z.i], answered = it.pick != null || it.timedOut;
-  if (Z.mode === 'practice' && answered) return;
-  it.pick = oi; it.timedOut = false;
-  if (Z.mode === 'practice') {
-    clearInterval(tick); renderQ();
-    if (S.autoNext && oi === it.q.a) setTimeout(() => { if (Z && !Z.done && Z.items[Z.i] === it) next(); }, 700);
-  } else renderQ();
-}
-function next(){
-  clearInterval(tick);
-  if (Z.i < Z.items.length - 1) { Z.i++; renderQ(); } else finish();
-}
-$('opts').addEventListener('click', e => { const b = e.target.closest('.opt'); if (b && !b.disabled) choose(+b.dataset.oi); });
-$('next').onclick = next;
-$('prev').onclick = () => { clearInterval(tick); if (Z.i > 0) { Z.i--; renderQ(); } };
-$('quit').onclick = () => {
-  if (!confirm('End this quiz now? Only the questions you have reached will be scored.')) return;
-  const it = Z.items[Z.i], keep = Z.i + (it.pick != null || it.timedOut ? 1 : 0);
-  if (!keep) { clearInterval(tick); Z.done = true; renderSetup(); show('setup'); return; }
-  Z.items = Z.items.slice(0, keep); Z.endedEarly = true; finish();
-};
-document.addEventListener('keydown', e => {
-  if ($('quiz').hidden || !Z || Z.done || e.target.tagName === 'INPUT') return;
-  const k = e.key.toLowerCase(), pos = {a: 0, b: 1, c: 2, '1': 0, '2': 1, '3': 2}[k];
-  if (pos != null) { const it = Z.items[Z.i]; choose(it.order[pos]); e.preventDefault(); }
-  else if ((k === 'enter' || k === 'arrowright') && !$('next').disabled) { next(); e.preventDefault(); }
-  else if (k === 'arrowleft' && !$('prev').hidden) { $('prev').click(); e.preventDefault(); }
-});
+  // ---------- state ----------
+  var root = document.getElementById("app");
+  var bank = window.SAFETY_BANK && Array.isArray(window.SAFETY_BANK.questions) && Array.isArray(window.SAFETY_BANK.chapters) ? window.SAFETY_BANK : null;
+  var gateOpen = !gateSeen();
+  var S = Object.assign({}, DEFAULTS, asObject(load(KEY.settings, {})));
+  if (!Array.isArray(S.chapters)) S.chapters = ALL_CH;
+  var wrong = asObject(load(KEY.wrong, {}));
+  var history = load(KEY.history, []);
+  if (!Array.isArray(history)) history = [];
+  var sheet = false;
+  var showAll = false;
+  var Z = null;            // the running quiz
+  var screen = "setup";    // setup | quiz | result
+  var tickId = null, lastTick = 0;
 
-// ---------- results ----------
-function finish(){
-  clearInterval(tick); Z.done = true;
-  const items = Z.items, right = items.filter(x => x.pick === x.q.a).length;
-  const pct = Math.round(right / items.length * 100), secs = Math.round((Date.now() - Z.start) / 1000);
-  // wrong book: add misses, remove questions answered correctly
-  items.forEach(x => { if (x.pick === x.q.a) delete wrongBook[x.q.id]; else if (x.seen) wrongBook[x.q.id] = (wrongBook[x.q.id] || 0) + 1; });
-  store.set('wrong', wrongBook);
-  const d = new Date();
-  history.unshift({pct, right, total: items.length, label: Z.label, date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`});
-  history = history.slice(0, 50); store.set('history', history);
+  function set(patch) { S = Object.assign({}, S, patch); save(KEY.settings, S); render(); }
+  function chName(n) { var c = bank && bank.chapters.find(function (x) { return x.n === n; }); return c ? c.name : ""; }
+  function getPool() { return bank ? bank.questions.filter(function (q) { return S.chapters.indexOf(q.ch) >= 0 && (!S.onlyWrong || wrong[q.id]); }) : []; }
+  // Wrong-book ids carried over from an older bank may no longer exist; count only live ones.
+  function getWrongCount() { return bank ? bank.questions.filter(function (q) { return wrong[q.id]; }).length : Object.keys(wrong).length; }
+  function rightCount(items) { return items.filter(function (x) { return x.pick === x.q.a; }).length; }
 
-  $('resScore').textContent = `${right} / ${items.length} · ${pct}%`;
-  $('resScore').style.color = pct >= 70 ? 'var(--good)' : pct >= 50 ? 'var(--warn)' : 'var(--bad)';
-  const missed = items.filter(x => x.pick == null).length;
-  $('resSub').textContent = `Time used ${Math.floor(secs / 60)}m ${secs % 60}s` + (missed ? ` · ${missed} not answered` : '') + (Z.endedEarly ? ' · ended early' : '') + ` · ${Z.label}`;
-  const byCh = {};
-  items.forEach(x => { const c = byCh[x.q.ch] ||= {r: 0, t: 0}; c.t++; if (x.pick === x.q.a) c.r++; });
-  $('byChapter').innerHTML = Object.entries(byCh).sort((a, b) => a[0] - b[0]).map(([ch, c]) =>
-    `<div class="bc"><span>${ch}. ${esc(CH_NAME[ch])}</span><div class="bar"><div style="width:${c.r / c.t * 100}%"></div></div><span class="v">${c.r}/${c.t}</span></div>`).join('');
-  $('retryWrong').disabled = right === items.length;
-  $('showAllReview').checked = false;
-  renderReview();
-  show('result');
-}
-function renderReview(){
-  const all = $('showAllReview').checked, items = Z.items.filter(x => all || x.pick !== x.q.a);
-  $('reviewCount').textContent = `(${Z.items.filter(x => x.pick !== x.q.a).length} wrong)`;
-  $('review').innerHTML = items.length ? items.map(x => {
-    const q = x.q, ok = x.pick === q.a;
-    const li = x.order.map((oi, pos) => `<li class="${oi === q.a ? 'c' : oi === x.pick ? 'x' : ''}">${LETTERS[pos]}. ${esc(q.o[oi])}</li>`).join('');
-    const note = x.pick == null ? (x.timedOut ? 'time up' : 'not answered') : ok ? 'correct' : 'your answer crossed out';
-    return `<div class="rv${ok ? ' ok' : ''}"><div class="rm">${q.id} · 第${q.ch}章 ${esc(CH_NAME[q.ch])} · 手冊 p.${q.p} · ${note}</div>
-      <div class="rq">${esc(q.q)}</div><ul type="none">${li}</ul></div>`;
-  }).join('') : '<div class="empty">All correct — nothing to review.</div>';
-}
-$('showAllReview').onchange = renderReview;
-$('retryWrong').onclick = () => {
-  const qs = Z.items.filter(x => x.pick !== x.q.a).map(x => x.q);
-  const saved = S.count; S.count = 'all'; startQuiz(qs, true); S.count = saved;
-};
-$('again').onclick = () => startQuiz(pool());
-$('toSetup').onclick = () => { renderSetup(); show('setup'); };
+  // ---------- quiz engine ----------
+  function finish() {
+    var z = Z; if (!z || z.done) return;
+    z.done = true; z.end = Date.now();
+    var items = z.items, right = rightCount(items);
+    var pct = Math.round((right / items.length) * 100);
+    var w = Object.assign({}, wrong);
+    items.forEach(function (x) { if (x.pick === x.q.a) delete w[x.q.id]; else if (x.seen) w[x.q.id] = (w[x.q.id] || 0) + 1; });
+    wrong = w; save(KEY.wrong, wrong);
+    var d = new Date(), p2 = function (v) { return String(v).padStart(2, "0"); };
+    history = [{
+      pct: pct, right: right, total: items.length, label: z.label,
+      date: d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes())
+    }].concat(history).slice(0, 50);
+    save(KEY.history, history);
+    showAll = false; screen = "result"; render();
+  }
 
-function show(id){
-  ['setup', 'quiz', 'result'].forEach(s => $(s).hidden = s !== id);
-  window.scrollTo(0, 0);
-}
-$('start').onclick = () => startQuiz(pool());
+  function next() {
+    var z = Z; if (!z || z.done) return;
+    if (z.i < z.items.length - 1) { z.i++; z.items[z.i].seen = true; render(); } else finish();
+  }
 
-renderChapters(); renderSetup();
+  function startQuiz(questions, retry) {
+    if (!bank || !questions.length) return;
+    var n = retry || S.count === "all" ? questions.length : Math.min(S.count, questions.length);
+    var ordered = S.shuffleQ ? shuffle(questions) : questions.slice().sort(function (a, b) {
+      return a.ch - b.ch || a.id.localeCompare(b.id, undefined, { numeric: true });
+    });
+    // options that refer to each other ("以上兩者皆是") keep their printed order
+    var list = ordered.slice(0, n).map(function (q) {
+      return { q: q, order: S.shuffleO && !q.k ? shuffle([0, 1, 2]) : [0, 1, 2], pick: null, timedOut: false, left: null, seen: false };
+    });
+    list[0].seen = true;
+    var chs = retry ? Array.from(new Set(list.map(function (x) { return x.q.ch; }))) : S.chapters;
+    var base = chs.length === 1 ? "第" + chs[0] + "章 " + chName(chs[0]) : chs.length === bank.chapters.length ? "全部章節" : chs.length + " 章";
+    Z = {
+      items: list, i: 0, mode: S.mode, timer: S.timer, perQ: S.perQ, totalSec: S.totalMin * 60, start: Date.now(), end: 0,
+      deadline: S.timer === "total" ? Date.now() + S.totalMin * 60000 : null,
+      label: (S.onlyWrong && !retry ? "錯題 · " : "") + base + (retry ? " · 重做錯題" : ""), done: false, endedEarly: false
+    };
+    screen = "quiz"; lastTick = Date.now(); render();
+  }
+
+  function choose(oi) {
+    var z = Z; if (!z || z.done) return;
+    var it = z.items[z.i];
+    if (z.mode === "practice" && answered(it)) return;
+    it.pick = oi; it.timedOut = false; render();
+    if (z.mode === "practice" && S.autoNext && oi === it.q.a) {
+      setTimeout(function () { if (Z === z && !z.done && z.items[z.i] === it) next(); }, 700);
+    }
+  }
+  function back() { var z = Z; if (z && z.i > 0) { z.i--; render(); } }
+  function endEarly() {
+    var z = Z; if (!z) return;
+    if (!confirm("End this quiz now? Only the questions you have reached are scored.")) return;
+    var keep = z.i + (answered(z.items[z.i]) ? 1 : 0);
+    if (!keep) { z.done = true; Z = null; screen = "setup"; render(); return; }
+    z.items = z.items.slice(0, keep); z.endedEarly = true; finish();
+  }
+
+  // countdown: one ticking interval while a quiz is running. A tick only touches the
+  // timer elements, so a tap on an option is never lost to a redraw.
+  function tick() {
+    var z = Z; if (!z || z.done) return;
+    var now = Date.now(), dt = (now - lastTick) / 1000; lastTick = now;
+    if (z.timer === "question") {
+      var it = z.items[z.i];
+      var cur = it.left == null ? z.perQ : it.left;
+      var running = !it.timedOut && !(z.mode === "practice" && it.pick !== null) && cur > 0;
+      if (running) {
+        it.left = Math.max(0, cur - dt);
+        if (it.left <= 0) {
+          if (it.pick === null) it.timedOut = true;
+          if (z.mode === "exam") { next(); return; }
+          render(); return;
+        }
+      }
+    } else if (z.timer === "total" && z.deadline && now >= z.deadline) { finish(); return; }
+    updateTimer();
+  }
+  function syncTicker() {
+    if (screen === "quiz" && !tickId) { lastTick = Date.now(); tickId = setInterval(tick, 200); }
+    else if (screen !== "quiz" && tickId) { clearInterval(tickId); tickId = null; }
+  }
+  function timerState() {
+    var z = Z, it = z.items[z.i];
+    var left = z.timer === "question" ? (it.left == null ? z.perQ : it.left) : z.timer === "total" && z.deadline ? Math.max(0, (z.deadline - Date.now()) / 1000) : 0;
+    var total = z.timer === "question" ? z.perQ : z.totalSec;
+    var low = z.timer !== "off" && (left <= Math.min(5, total * 0.2) || (total > 120 && left <= 60));
+    return { left: left, total: total, low: low };
+  }
+  function updateTimer() {
+    var el = document.getElementById("sq-timer");
+    if (!el || !Z || screen !== "quiz") return;
+    var t = timerState();
+    el.classList.toggle("low", t.low);
+    el.firstElementChild.textContent = fmtTime(t.left);
+    document.getElementById("sq-timer-bar").style.width = (t.left / t.total) * 100 + "%";
+  }
+
+  // keyboard: A/B/C or 1/2/3, Enter/right arrow next, left arrow back
+  window.addEventListener("keydown", function (e) {
+    if (screen !== "quiz") return;
+    var z = Z; if (!z || z.done) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key.toLowerCase(), pos = { a: 0, b: 1, c: 2, "1": 0, "2": 1, "3": 2, z: 0 , x: 2 }[k];
+    var it = z.items[z.i];
+    if (pos !== undefined) { choose(it.order[pos]); e.preventDefault(); }
+    else if ((k === "enter" || k === "arrowright") && (z.mode === "exam" || answered(it))) { next(); e.preventDefault(); }
+    else if (k === "arrowleft" && z.mode === "exam") { back(); e.preventDefault(); }
+  });
+
+  // ---------- small UI pieces ----------
+  function seg(name, value, options) {
+    return '<div class="seg">' + options.map(function (o) {
+      return '<button data-act="seg" data-k="' + name + '" data-v="' + o[0] + '" class="' + (value === o[0] ? "on" : "") + '">' + esc(o[1]) + "</button>";
+    }).join("") + "</div>";
+  }
+  function toggle(name, on, label, disabled) {
+    return '<button data-act="toggle" data-k="' + name + '" class="toggle' + (on ? " on" : "") + '"' + (disabled ? " disabled" : "") + ">" + (on ? "✓ " : "") + esc(label) + "</button>";
+  }
+  function stepper(name, value, min, max, step, unit) {
+    var a = ' data-k="' + name + '" data-min="' + min + '" data-max="' + max + '"';
+    return '<div class="stepper">' +
+      '<button data-act="step"' + a + ' data-d="' + -step + '" aria-label="less">−</button>' +
+      "<span>" + value + " " + unit + "</span>" +
+      '<button data-act="step"' + a + ' data-d="' + step + '" aria-label="more">+</button></div>';
+  }
+
+  // ---------- screens ----------
+  function viewGate() {
+    return '<div class="page"><div class="overlay"><div class="gate-card">' +
+      '<div class="gate-title">Enter passcode</div>' +
+      '<input id="sq-pass" class="gate-input" placeholder="Passcode" type="password" autocomplete="off" autocapitalize="off">' +
+      '<div class="gate-row"><span id="sq-pass-err" class="gate-err"></span><button data-act="unlock" class="btn-black">Unlock</button></div>' +
+      '<div class="gate-note">First-time access lock. Passcode required.</div>' +
+      "</div></div></div>";
+  }
+
+  function viewNoBank() {
+    return '<div class="page"><div class="center-msg">Could not load the question bank. Make sure data/bank.js sits next to index.html, then reload.</div></div>';
+  }
+
+  // quiz: full screen, nothing to scroll; Next sits at the bottom away from the options
+  function viewQuiz() {
+    var z = Z, it = z.items[z.i], q = it.q, done = answered(it), reveal = z.mode === "practice" && done;
+    var right = rightCount(z.items), seen = z.items.filter(answered).length;
+    var long = q.q.length > 90 || q.o.some(function (o) { return o.length > 40; });
+    var h = '<div class="full"><div class="q-top">' +
+      '<button data-act="end" class="btn-end">✕ End</button>' +
+      '<div class="q-prog"><div class="nums"><span>' + (z.i + 1) + " / " + z.items.length + "</span>" +
+      (z.mode === "practice" ? '<span class="score">✓ ' + right + " / " + seen + "</span>" : "") + "</div>" +
+      '<div class="bar"><div style="width:' + (z.i / z.items.length) * 100 + '%"></div></div></div>';
+    if (z.timer !== "off") h += '<div id="sq-timer" class="q-timer"><span></span><div class="bar"><div id="sq-timer-bar"></div></div></div>';
+    h += "</div>";
+
+    h += '<div id="sq-body" class="q-body" data-keep="q' + z.i + '">' +
+      '<div class="q-meta"><span class="chip">第' + q.ch + "章 " + esc(chName(q.ch)) + "</span><span>" + esc(q.id) + " · 手冊 p." + esc(q.p) + "</span></div>" +
+      '<h2 class="q-text' + (long ? " long" : "") + '">' + esc(q.q) + "</h2>" +
+      '<div class="opts">';
+    it.order.forEach(function (oi, pos) {
+      var cls = "";
+      if (reveal && oi === q.a) cls = " right";
+      else if (reveal && oi === it.pick) cls = " wrong";
+      else if (!reveal && oi === it.pick) cls = " picked";
+      h += '<button data-act="choose" data-v="' + oi + '" class="opt' + (long ? " long" : "") + cls + '"' + (reveal ? " disabled" : "") + ">" +
+        '<span class="dot">' + LETTERS[pos] + '</span><span class="txt">' + esc(q.o[oi]) + "</span></button>";
+    });
+    h += "</div>";
+    if (reveal) {
+      var ok = it.pick === q.a;
+      h += '<div class="feedback ' + (ok ? "ok" : "bad") + '">' +
+        (ok ? "✓ 答對 Correct" : (it.timedOut ? "⏱ 時間到 Time up" : "✗ 答錯 Wrong") + ", 答案 " + LETTERS[it.order.indexOf(q.a)] + ". " + esc(q.o[q.a])) + "</div>";
+    }
+    h += "</div>";
+
+    h += '<div class="q-foot">' +
+      (z.mode === "exam" ? '<button data-act="back" class="btn-back"' + (z.i === 0 ? " disabled" : "") + ">←</button>" : "") +
+      '<button data-act="next" class="btn-next"' + (z.mode === "practice" && !done ? " disabled" : "") + ">" +
+      (z.i === z.items.length - 1 ? "完成 Finish" : "下一題 Next →") + "</button></div></div>";
+    return h;
+  }
+
+  // result: summary fixed, review list scrolls inside its own box
+  function viewResult() {
+    var z = Z, items = z.items, right = rightCount(items), pct = Math.round((right / items.length) * 100);
+    var secs = Math.round(((z.end || Date.now()) - z.start) / 1000), missed = items.filter(function (x) { return x.pick === null; }).length;
+    var byCh = {};
+    items.forEach(function (x) { var c = byCh[x.q.ch] || (byCh[x.q.ch] = { r: 0, t: 0 }); c.t++; if (x.pick === x.q.a) c.r++; });
+    var review = items.filter(function (x) { return showAll || x.pick !== x.q.a; });
+
+    var h = '<div class="full"><div class="r-main"><div class="r-card">' +
+      '<div class="r-score ' + pctColor(pct) + '">' + right + " / " + items.length + " · " + pct + "%</div>" +
+      '<div class="r-sub">' + Math.floor(secs / 60) + "m " + (secs % 60) + "s" + (missed ? " · " + missed + " 未答" : "") + (z.endedEarly ? " · 提早結束" : "") + " · " + esc(z.label) + "</div>" +
+      '<div class="r-chs">';
+    Object.keys(byCh).sort(function (a, b) { return +a - +b; }).forEach(function (ch) {
+      var c = byCh[ch];
+      h += '<div class="r-ch"><span class="nm">' + ch + ". " + esc(chName(+ch)) + '</span><div class="hb"><div style="width:' + (c.r / c.t) * 100 + '%"></div></div><span class="ct">' + c.r + "/" + c.t + "</span></div>";
+    });
+    h += "</div></div>";
+
+    h += '<div class="r-head"><span>Review <span class="n">(' + (items.length - right) + ' wrong)</span></span>' +
+      '<button data-act="showall" class="pill">' + (showAll ? "Only wrong" : "Show all") + "</button></div>";
+    h += '<div class="r-list" data-keep="review' + (showAll ? "A" : "W") + '">';
+    if (review.length) {
+      review.forEach(function (x) {
+        var ok = x.pick === x.q.a;
+        h += '<div class="r-item' + (ok ? " ok" : "") + '"><div class="tag">' + esc(x.q.id) + " · 第" + x.q.ch + "章 · p." + esc(x.q.p) + " · " +
+          (x.pick === null ? (x.timedOut ? "時間到" : "未答") : ok ? "答對" : "你的答案已劃線") + "</div>" +
+          '<div class="qq">' + esc(x.q.q) + "</div><ul>";
+        x.order.forEach(function (oi, pos) {
+          h += '<li class="' + (oi === x.q.a ? "ans" : oi === x.pick ? "mine" : "") + '">' + LETTERS[pos] + ". " + esc(x.q.o[oi]) + "</li>";
+        });
+        h += "</ul></div>";
+      });
+    } else h += '<div class="r-empty">全部答對, nothing to review.</div>';
+    h += "</div></div>";
+
+    h += '<div class="r-foot">' +
+      '<button data-act="retry" class="btn-dark"' + (right === items.length ? " disabled" : "") + ">重做錯題</button>" +
+      '<button data-act="again" class="lite">再來一次</button>' +
+      '<button data-act="setup" class="lite">設定</button></div></div>';
+    return h;
+  }
+
+  // setup: one screen; chapters open in a sheet
+  function viewSetup() {
+    var pool = getPool(), wrongCount = getWrongCount();
+    var n = S.count === "all" ? pool.length : Math.min(S.count, pool.length);
+    var chLabel = S.chapters.length === bank.chapters.length ? "全部 " + bank.chapters.length + " 章"
+      : S.chapters.length === 0 ? "未選章節"
+      : S.chapters.length <= 2 ? S.chapters.map(function (c) { return c + ". " + chName(c); }).join("、")
+      : S.chapters.length + " 章";
+    var last = history[0];
+
+    var h = '<div class="page setup"><main class="setup-main">' +
+      '<div class="setup-head"><h1>職安健常識問答</h1><span class="xs muted">手冊 ' + esc(bank.edition) + " · " + bank.questions.length + " 題</span></div>" +
+      '<div id="sq-setup" class="card" data-keep="setup">';
+
+    h += '<button data-act="sheet-open" class="ch-btn"><span><span class="lbl">章節 Chapters</span><span class="val">' + esc(chLabel) + '</span></span><span class="go">更改 ›</span></button>';
+
+    h += '<div><div class="field-label">題數 Questions <span class="right">' + (pool.length ? n + " / " + pool.length + " 題可用" : "") + "</span></div>" +
+      seg("count", S.count, [[10, "10"], [20, "20"], [50, "50"], [100, "100"], ["all", "全部"]]) + "</div>";
+
+    h += '<div><div class="field-label">模式 Mode</div>' +
+      seg("mode", S.mode, [["practice", "練習 即時對答案"], ["exam", "考試 完結先睇"]]) + "</div>";
+
+    h += '<div><div class="field-label row"><span>倒數 Countdown</span>' +
+      (S.timer === "question" ? stepper("perQ", S.perQ, 5, 120, 5, "秒/題") : "") +
+      (S.timer === "total" ? stepper("totalMin", S.totalMin, 5, 180, 5, "分鐘") : "") + "</div>" +
+      seg("timer", S.timer, [["off", "關"], ["question", "每題"], ["total", "全卷"]]) + "</div>";
+
+    h += '<div class="row">' + toggle("shuffleQ", S.shuffleQ, "亂序題目") + toggle("shuffleO", S.shuffleO, "亂序ABC") +
+      toggle("autoNext", S.autoNext, "自動下一題", S.mode !== "practice") + "</div>";
+
+    h += '<div class="row">' + toggle("onlyWrong", S.onlyWrong, "只做錯題簿 (" + wrongCount + ")", !wrongCount && !S.onlyWrong) +
+      '<button data-act="defaults" class="btn-reset">重設預設</button></div>';
+    h += "</div>";
+
+    h += '<div class="last-row"><span>' +
+      (last ? '上次 <b class="' + pctColor(last.pct) + '">' + esc(last.pct) + "%</b> (" + esc(last.right) + "/" + esc(last.total) + ") · " + esc(last.label) : "未有紀錄") + "</span>" +
+      (history.length > 0 || wrongCount > 0 ? '<button data-act="clear">清除紀錄</button>' : "") + "</div>";
+    h += '<button data-act="start" class="btn-start"' + (pool.length ? "" : " disabled") + ">開始 Start · " + n + " 題</button></main>";
+
+    if (sheet) {
+      h += '<div class="sheet-back" data-act="sheet-close" data-self="1"><div class="sheet">' +
+        '<div class="sheet-head"><span>章節 Chapters</span><div class="acts">' +
+        '<button data-act="ch-all" class="pill">全選</button><button data-act="ch-none" class="pill">清除</button></div></div>' +
+        '<div class="ch-grid" data-keep="sheet">';
+      bank.chapters.forEach(function (c) {
+        var on = S.chapters.indexOf(c.n) >= 0;
+        h += '<button data-act="ch" data-v="' + c.n + '" class="ch-item' + (on ? " on" : "") + '"><span class="box">' + (on ? "✓" : "") +
+          '</span><span class="name">' + c.n + ". " + esc(c.name) + '</span><span class="cnt">' + c.count + "</span></button>";
+      });
+      h += '</div><button data-act="sheet-close" class="btn-dark">完成 · 已選 ' + S.chapters.length + " 章</button></div></div>";
+    }
+    return h + "</div>";
+  }
+
+  function render() {
+    var keep = {};
+    root.querySelectorAll("[data-keep]").forEach(function (el) { keep[el.getAttribute("data-keep")] = el.scrollTop; });
+    var html;
+    if (gateOpen) html = viewGate();
+    else if (!bank) html = viewNoBank();
+    else if (screen === "quiz" && Z) html = viewQuiz();
+    else if (screen === "result" && Z) html = viewResult();
+    else html = viewSetup();
+    root.innerHTML = html;
+    root.querySelectorAll("[data-keep]").forEach(function (el) { var v = keep[el.getAttribute("data-keep")]; if (v) el.scrollTop = v; });
+    syncTicker();
+    updateTimer();
+    if (gateOpen) { var p = document.getElementById("sq-pass"); if (p) p.focus(); }
+  }
+
+  // ---------- events ----------
+  function unlock() {
+    var p = document.getElementById("sq-pass"); if (!p) return;
+    if (p.value.trim().toLowerCase() === PASS) { gateRemember(); gateOpen = false; render(); }
+    else { p.classList.add("err"); document.getElementById("sq-pass-err").textContent = "Wrong passcode"; }
+  }
+  root.addEventListener("input", function (e) {
+    if (e.target.id !== "sq-pass") return;
+    e.target.classList.remove("err"); document.getElementById("sq-pass-err").textContent = "";
+  });
+  root.addEventListener("keydown", function (e) { if (e.target.id === "sq-pass" && e.key === "Enter") unlock(); });
+
+  var actions = {
+    unlock: unlock,
+    seg: function (el) { var k = el.dataset.k, v = el.dataset.v, p = {}; p[k] = k === "count" && v !== "all" ? +v : v; set(p); },
+    toggle: function (el) { var p = {}; p[el.dataset.k] = !S[el.dataset.k]; set(p); },
+    step: function (el) { var k = el.dataset.k, p = {}; p[k] = Math.min(+el.dataset.max, Math.max(+el.dataset.min, S[k] + +el.dataset.d)); set(p); },
+    defaults: function () { S = Object.assign({}, DEFAULTS); save(KEY.settings, S); render(); },
+    clear: function () {
+      if (!confirm("Clear your results history and wrong-answer book?")) return;
+      history = []; wrong = {}; save(KEY.history, []); save(KEY.wrong, {}); render();
+    },
+    start: function () { startQuiz(getPool(), false); },
+    "sheet-open": function () { sheet = true; render(); },
+    "sheet-close": function () { sheet = false; render(); },
+    "ch-all": function () { set({ chapters: ALL_CH }); },
+    "ch-none": function () { set({ chapters: [] }); },
+    ch: function (el) {
+      var n = +el.dataset.v, on = S.chapters.indexOf(n) >= 0;
+      set({ chapters: on ? S.chapters.filter(function (x) { return x !== n; }) : S.chapters.concat([n]).sort(function (a, b) { return a - b; }) });
+    },
+    end: endEarly,
+    choose: function (el) { choose(+el.dataset.v); },
+    next: next,
+    back: back,
+    showall: function () { showAll = !showAll; render(); },
+    retry: function () { startQuiz(Z.items.filter(function (x) { return x.pick !== x.q.a; }).map(function (x) { return x.q; }), true); },
+    again: function () { startQuiz(getPool(), false); },
+    setup: function () { Z = null; screen = "setup"; render(); }
+  };
+  root.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-act]");
+    if (!el || !root.contains(el) || el.disabled) return;
+    if (el.dataset.self && e.target !== el) return;   // backdrop only closes on a tap outside the sheet
+    var fn = actions[el.dataset.act];
+    if (fn) fn(el);
+  });
+
+  render();
 })();
